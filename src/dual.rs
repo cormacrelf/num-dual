@@ -11,7 +11,7 @@ use std::ops::{
 };
 
 /// A dual number for the calculations of gradients or Jacobians.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct DualVec<T: DualNum<F>, F, D: Dim>
 where
     DefaultAllocator: Allocator<T, D>,
@@ -389,5 +389,68 @@ where
             eps,
             f: PhantomData,
         }
+    }
+}
+
+/// Comparisons are only made based on the real part. This allows the code to follow the
+/// same execution path as real-valued code would.
+impl<T: DualNum<F> + PartialEq, F: Float, D: Dim> PartialEq for DualVec<T, F, D>
+where
+    DefaultAllocator: Allocator<T, D>,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.re.eq(&other.re)
+    }
+}
+/// Like PartialEq, comparisons are only made based on the real part. This allows the code to follow the
+/// same execution path as real-valued code would.
+impl<T: DualNum<F> + PartialOrd, F: Float, D: Dim> PartialOrd for DualVec<T, F, D>
+where
+    DefaultAllocator: Allocator<T, D>,
+{
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.re.partial_cmp(&other.re)
+    }
+}
+/// Like PartialEq, comparisons are only made based on the real part. This allows the code to follow the
+/// same execution path as real-valued code would.
+impl<T: DualNum<F> + approx::AbsDiffEq<Epsilon = F>, F: Float, D: Dim> approx::AbsDiffEq
+    for DualVec<T, F, D>
+where
+    DefaultAllocator: Allocator<T, D>,
+{
+    type Epsilon = F;
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.re.abs_diff_eq(&other.re, epsilon)
+    }
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        T::default_epsilon()
+    }
+}
+/// Like PartialEq, comparisons are only made based on the real part. This allows the code to follow the
+/// same execution path as real-valued code would.
+impl<T: DualNum<F> + approx::RelativeEq<Epsilon = F>, F: Float, D: Dim> approx::RelativeEq
+    for DualVec<T, F, D>
+where
+    DefaultAllocator: Allocator<T, D>,
+{
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        T::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.re.relative_eq(&other.re, epsilon, max_relative)
     }
 }

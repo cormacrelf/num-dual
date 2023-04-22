@@ -283,3 +283,142 @@ where
 
 impl_first_derivatives!(DualVec, [eps], [D]);
 impl_dual!(DualVec, [eps], [D]);
+
+/**
+ * The SimdValue trait is for rearranging data into a form more suitable for Simd,
+ * and rearranging it back into a usable form.
+ *
+ * The primary job of this SimdValue impl is to allow people to use `simba::simd::AutoSimd`,
+ * which implements the `num` traits, as their T, with our F parameter
+ * set to <T as SimdValue>::Element. The AutoSimd type stores short arrays of floats etc, but
+ * needs to be treated like a scalar. Therefore you need to be able to split up any type that
+ * contains an AutoSimd<[f32; 4]> into four of your wrapper type. Then you can do normal math
+ * operations on each one without having to know that underneath, everything was stored in
+ * batches of [f32; 4]. But if you _do_ want to take advantage of SIMD instructions,
+ * specialized implementations of `SimdRealField` can choose *not* to decompose the wrapper of
+ * [f32; 4] into * individual wrappers of f32, and instead do bulk operations on the [f32; 4]s.
+ * That's the idea. SimdValue is plumbing to be able to plug any wrapper type in to use
+ * the non-specialized math operations that you would * find * in `nalgebra::RealField`.
+ * `RealField` provides the default implementation of `SimdRealField`'s methods.
+ *
+ * Ultimately, if you want more than _mere plumbing compatibility_ with AutoSimd and the like,
+ * then you would have to implement SimdRealField on DualVec in such a way that it uses
+ * SIMD instructions on particular CPUs. That's future work for someone who finds num_dual is not
+ * fast enough.
+ *
+ */
+impl<T, const N: usize> nalgebra::SimdValue for DualVec<T, T::Element, N>
+where
+    T: DualNum<T::Element> + SimdValue,
+    T::Element: DualNum<T::Element> + Scalar,
+{
+    // Say T = AutoSimd<[f32; 4]>. T::Element is f32. T::SimdBool is AutoSimd<[bool; 4]>.
+    // AutoSimd<[f32; 4]> stores an actual [f32; 4], i.e. four floats in one slot.
+    // So our DualVec<AutoSimd<[f32; 4], f32, N> has 4 * (1+N) floats in it, stored in blocks of
+    // four. When we want to do ANY math on it, we need to break that type into
+    // FOUR of DualVec<f32, f32, N>; then we do math on it, then we bring it back together. The
+    // SimdValue trait lets other nalgebra code do this:
+    //
+    // 1. Ask us how many lanes to use (4, because AutoSimd<[f32; 4]> says "4 lanes please")
+    // 2. Extract the  i-th lane, for i < 4, returning DualVec<f32, f32, N>.
+    // 2.
+    //
+    type Element = DualVec<T::Element, T::Element, N>;
+    type SimdBool = T::SimdBool;
+
+    #[inline]
+    fn lanes() -> usize {
+        T::lanes()
+    }
+
+    #[inline]
+    fn splat(val: Self::Element) -> Self {
+        // Need to make `lanes` copies of each of:
+        // - the real part
+        // - each of the N epsilon parts
+        let re: T = T::splat(val.re);
+        let eps: SVector<T, N> = val.eps.map(|e| T::splat(e));
+        Self {
+            re,
+            eps,
+            f: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn extract(&self, i: usize) -> Self::Element {
+        let re: T::Element = <T as SimdValue>::extract(&self.re, i);
+        let eps: SVector<T::Element, N> = self.eps.map(|e| T::extract(&e, i));
+        Self::Element {
+            re,
+            eps,
+            f: PhantomData,
+        }
+    }
+
+    #[inline]
+    unsafe fn extract_unchecked(&self, i: usize) -> Self::Element {
+        let re: T::Element = <T as SimdValue>::extract_unchecked(&self.re, i);
+        let eps: SVector<T::Element, N> = self.eps.map(|e| T::extract_unchecked(&e, i));
+        Self::Element {
+            re,
+            eps,
+            f: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn replace(&mut self, i: usize, val: Self::Element) {
+        self.re.replace(i, val.re);
+        self.eps
+            .iter_mut()
+            .zip(val.eps.iter().cloned())
+            .for_each(|(e, replacement)| {
+                e.replace(i, replacement);
+            })
+    }
+
+    #[inline]
+    unsafe fn replace_unchecked(&mut self, i: usize, val: Self::Element) {
+        self.re.replace_unchecked(i, val.re);
+        self.eps
+            .iter_mut()
+            .zip(val.eps.iter().cloned())
+            .for_each(|(e, replacement)| {
+                e.replace_unchecked(i, replacement);
+            })
+    }
+
+    #[inline]
+    fn select(self, cond: Self::SimdBool, other: Self) -> Self {
+        let re = self.re.select(cond, other.re);
+        let eps = SVector::<T, N>::from_iterator(
+            self.eps
+                .into_iter()
+                .cloned()
+                .zip(other.eps.into_iter().cloned())
+                .map(|(e, other_e)| e.select(cond, other_e)),
+        );
+        Self {
+            re,
+            eps,
+            f: PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn is_derivative_zero() {
+        let d = Dual::new(
+            DualVec64::new(1.0, SVector::from([2.5])),
+            SVector::from([DualVec64::zero()]),
+        );
+        assert!(!d.is_derivative_zero());
+        let d: DualVec64<1> = Dual::one();
+        assert!(d.is_derivative_zero())
+    }
+}

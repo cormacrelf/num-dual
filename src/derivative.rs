@@ -49,7 +49,10 @@ where
     //
     // To implement, we inline a copy of Matrix::map, which implicitly clones values, and remove
     // the cloning.
-    pub fn map_borrowed<T2, F2>(&self, mut f: impl FnMut(&T) -> T2) -> Derivative<T2, F2, R, C>
+    pub(crate) fn map_borrowed<T2, F2>(
+        &self,
+        mut f: impl FnMut(&T) -> T2,
+    ) -> Derivative<T2, F2, R, C>
     where
         T2: DualNum<F2>,
         DefaultAllocator: Allocator<T2, R, C>,
@@ -74,6 +77,38 @@ where
             unsafe { res.assume_init() }
         });
         Derivative::new(opt)
+    }
+
+    pub(crate) fn try_map_borrowed<T2, F2>(
+        &self,
+        mut f: impl FnMut(&T) -> Option<T2>,
+    ) -> Option<Derivative<T2, F2, R, C>>
+    where
+        T2: DualNum<F2>,
+        DefaultAllocator: Allocator<T2, R, C>,
+    {
+        self.0
+            .as_ref()
+            .and_then(move |eps| {
+                let ref this = eps;
+                let mut f = |e| f(e);
+                let (nrows, ncols) = this.shape_generic();
+                let mut res: Matrix<MaybeUninit<T2>, R, C, _> = Matrix::uninit(nrows, ncols);
+
+                for j in 0..ncols.value() {
+                    for i in 0..nrows.value() {
+                        // Safety: all indices are in range.
+                        unsafe {
+                            let a = this.data.get_unchecked(i, j);
+                            *res.data.get_unchecked_mut(i, j) = MaybeUninit::new(f(a)?);
+                        }
+                    }
+                }
+
+                // Safety: res is now fully initialized.
+                Some(unsafe { res.assume_init() })
+            })
+            .map(Derivative::some)
     }
 
     pub fn map<T2, F2>(&self, mut f: impl FnMut(T) -> T2) -> Derivative<T2, F2, R, C>
@@ -389,7 +424,7 @@ where
             // Unfortunately there is no way to use the vectorized version of `is_zero`, which is
             // only for matrices with statically known dimensions. Specialization would be
             // required.
-            .filter(|x| x.iter().any(|e| !e.is_zero()));
+            .filter(|x| Iterator::any(&mut x.iter(), |e| !e.is_zero()));
         Derivative::new(opt)
     }
 
@@ -482,5 +517,39 @@ where
                 _ => self,
             }
         }
+    }
+}
+
+use simba::scalar::{SubsetOf, SupersetOf};
+
+impl<TSuper, FSuper, T, F, R: Dim, C: Dim> SubsetOf<Derivative<TSuper, FSuper, R, C>>
+    for Derivative<T, F, R, C>
+where
+    TSuper: DualNum<FSuper> + SupersetOf<T>,
+    T: DualNum<F>,
+    DefaultAllocator: Allocator<T, R, C>,
+    DefaultAllocator: Allocator<TSuper, R, C>,
+    // DefaultAllocator: Allocator<TSuper, D>
+    //     + Allocator<TSuper, U1, D>
+    //     + Allocator<TSuper, D, U1>
+    //     + Allocator<TSuper, D, D>,
+{
+    #[inline(always)]
+    fn to_superset(&self) -> Derivative<TSuper, FSuper, R, C> {
+        self.map_borrowed(|elem| TSuper::from_subset(elem))
+    }
+    #[inline(always)]
+    fn from_superset(element: &Derivative<TSuper, FSuper, R, C>) -> Option<Self> {
+        element.try_map_borrowed(|elem| TSuper::to_subset(elem))
+    }
+    #[inline(always)]
+    fn from_superset_unchecked(element: &Derivative<TSuper, FSuper, R, C>) -> Self {
+        element.map_borrowed(|elem| TSuper::to_subset_unchecked(elem))
+    }
+    #[inline(always)]
+    fn is_in_subset(element: &Derivative<TSuper, FSuper, R, C>) -> bool {
+        element.0.as_ref().map_or(true, |matrix| {
+            matrix.iter().all(|elem| TSuper::is_in_subset(elem))
+        })
     }
 }
